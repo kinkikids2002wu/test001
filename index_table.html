@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>生產日報表修改申請系統</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🏭 生產日報表修改申請系統</h1>
+      <p>查詢、修改、儲存與列印生產日報表資料</p>
+    </div>
+
+    <div class="content">
+      <!-- 搜尋區域 -->
+      <div class="search-section">
+        <form class="search-form" onsubmit="searchData(event)">
+          <div class="form-group">
+            <label for="dySerialNum">生產日報表序號</label>
+            <input
+              type="text"
+              id="dySerialNum"
+              name="dySerialNum"
+              placeholder="例如: DY20260128094"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-primary">🔍 查詢</button>
+        </form>
+      </div>
+
+      <!-- 訊息提示 -->
+      <div id="alert" class="alert"></div>
+
+      <!-- 載入動畫 -->
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>資料查詢中，請稍候...</p>
+      </div>
+
+      <!-- 結果區域 -->
+      <div id="resultSection" class="result-section" style="display: none;">
+        <div class="result-header">
+          <h2>📊 查詢結果與修改</h2>
+          <div class="result-info">
+            共 <span id="recordCount">0</span> 筆資料
+          </div>
+        </div>
+
+        <!-- 刪除選項 -->
+        <div class="delete-section">
+          <label class="checkbox-label">
+            <input type="checkbox" id="deleteFlag" onchange="handleDeleteToggle()" />
+            <span>整張生產日報表刪除</span>
+          </label>
+          <span class="delete-hint">（勾選後，修改欄位將被停用）</span>
+        </div>
+
+        <div id="cardsContainer" class="prs-cards"></div>
+
+        <!-- 操作按鈕 -->
+        <div class="action-buttons">
+          <button type="button" class="btn btn-success" onclick="saveModification()" id="saveBtn">
+            💾 儲存
+          </button>
+          <button type="button" class="btn btn-info" onclick="uploadFiles()" id="uploadBtn" style="display: none;">
+            📤 上傳至網路資料夾
+          </button>
+          <button type="button" class="btn btn-warning" onclick="printQueue()" id="printBtn" style="display: none;">
+            🖨️ 列印
+          </button>
+        </div>
+
+        <!-- 修改申請清單（條列式） -->
+        <div class="print-queue-section" id="printQueueSection" style="display: none;">
+          <div class="queue-header">
+            <h3>📋 修改申請清單</h3>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="clearQueue()" id="clearQueueBtn">
+              🗑️ 全部刪除
+            </button>
+          </div>
+          <div class="queue-list" id="queueList">
+            <!-- 動態生成列表項目 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentData = null;
+    let currentDateType = null; // 'same_day' 或 'different_day'
+
+    // 可輸入修改的欄位
+    const EDITABLE_LABELS = new Set([
+      '工作日期',
+      '工序編號',
+      '機台編號',
+      '工作者編號',
+      '完工數',
+      '不良數',
+      '起工時間',
+      '完工時間',
+      '除外名稱1',
+      '除外名稱2',
+      '除外名稱3',
+      '除外時間1',
+      '除外時間2',
+      '除外時間3',
+    ]);
+
+    // 判斷工作日期是否為當天
+    function isSameDay(workDate) {
+      if (!workDate) {
+        console.log('[isSameDay] workDate 為空');
+        return false;
+      }
+      
+      // 使用本地時區，不使用 UTC
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      const todayStr = `${year}-${month}-${day}`; // YYYY-MM-DD
+      
+      console.log('[isSameDay] 今天日期（本地時區）:', todayStr);
+      
+      // 處理不同的日期格式
+      let workDateStr = '';
+      if (typeof workDate === 'string') {
+        // 如果是字串，嘗試轉換為 YYYY-MM-DD 格式
+        if (workDate.includes('/')) {
+          // 格式如 2026/02/01
+          const parts = workDate.split('/');
+          if (parts.length === 3) {
+            workDateStr = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+          }
+        } else if (workDate.includes('-')) {
+          // 格式如 2026-02-01 或 2026-02-01 03:16:30
+          workDateStr = workDate.split(' ')[0]; // 去除時間部分
+        } else {
+          workDateStr = workDate;
+        }
+      }
+      
+      console.log('[isSameDay] 工作日期:', workDateStr);
+      console.log('[isSameDay] 是否相同:', workDateStr === todayStr);
+      
+      return workDateStr === todayStr;
+    }
+
+    // 更新按鈕顯示狀態（根據清單中的記錄類型）
+    async function updateButtonVisibility(currentRecordDateType = null) {
+      const uploadBtn = document.getElementById('uploadBtn');
+      const printBtn = document.getElementById('printBtn');
+      
+      try {
+        // 獲取清單中當天和非當天記錄的數量
+        const response = await fetch('/api/get_queue_types');
+        const data = await response.json();
+        
+        console.log('Queue types:', data); // 調試用
+        
+        if (data.success) {
+          const hasSameDay = data.same_day_count > 0;
+          const hasDifferentDay = data.different_day_count > 0;
+          
+          console.log('hasSameDay:', hasSameDay, 'hasDifferentDay:', hasDifferentDay); // 調試用
+          
+          if (hasSameDay && hasDifferentDay) {
+            // 混合情境：兩個按鈕都顯示
+            console.log('混合情境：顯示兩個按鈕'); // 調試用
+            uploadBtn.style.display = 'inline-block';
+            uploadBtn.innerHTML = '📤 上傳至網路資料夾（不需簽核）';
+            uploadBtn.disabled = false;
+            
+            printBtn.style.display = 'inline-block';
+            printBtn.innerHTML = '🖨️ 列印（需主管簽核）';
+            printBtn.disabled = false;
+            
+          } else if (hasSameDay) {
+            // 只有當天記錄：顯示上傳按鈕
+            console.log('只有當天記錄'); // 調試用
+            uploadBtn.style.display = 'inline-block';
+            uploadBtn.innerHTML = '📤 上傳至網路資料夾（不需簽核）';
+            uploadBtn.disabled = false;
+            
+            printBtn.style.display = 'none';
+            
+          } else if (hasDifferentDay) {
+            // 只有非當天記錄：顯示列印按鈕
+            console.log('只有非當天記錄'); // 調試用
+            uploadBtn.style.display = 'none';
+            
+            printBtn.style.display = 'inline-block';
+            printBtn.innerHTML = '🖨️ 列印（需主管簽核）';
+            printBtn.disabled = false;
+            
+          } else {
+            // 清單為空：根據當前查詢的記錄類型顯示
+            console.log('清單為空'); // 調試用
+            if (currentRecordDateType === 'same_day') {
+              uploadBtn.style.display = 'inline-block';
+              uploadBtn.innerHTML = '📤 上傳至網路資料夾（不需簽核）';
+              printBtn.style.display = 'none';
+            } else if (currentRecordDateType === 'different_day') {
+              uploadBtn.style.display = 'none';
+              printBtn.style.display = 'inline-block';
+              printBtn.innerHTML = '🖨️ 列印（需主管簽核）';
+            } else {
+              // 沒有查詢記錄，隱藏所有按鈕
+              uploadBtn.style.display = 'none';
+              printBtn.style.display = 'none';
+            }
+          }
+        }
+      } catch (error) {
+        console.error('更新按鈕狀態失敗:', error);
+      }
+    }
+
+    // 顯示欄位定義
+    const FIELDS = [
+      { label: '生產日報表序號', keys: ['生產日報表序號','生產日報表序號碼','dySerialNum','日報序號'] },
+      { label: '工作日期',       keys: ['工作日期','日期'] },
+      { label: '工作者編號',     keys: ['工作者編號','工作者代號','人員代號','員工編號'] },
+      { label: '工作者名稱',     keys: ['工作者名稱','工作者','人員名稱','員工姓名'] },
+
+      { label: '工序編號',       keys: ['工序代號','工序編號'] },
+      { label: '工序內容',       keys: ['工序內容','工序說明','工序名稱'] },
+      { label: '發工單號',       keys: ['發工單號','工單號','工單'] },
+      { label: '製令序號',       keys: ['製令序號','製令','製令號','製令編號'] },
+
+      { label: '產品編號',       keys: ['產品編號','品號','品番','料號'] },
+      { label: '品名規格',       keys: ['品名規格','品名','規格','品名/規格'] },
+      { label: '起工型態',       keys: ['起工型態','起工狀態','狀態'] },
+      { label: '起工時間',       keys: ['起工時間','起工','開始時間','開工時間'] },
+
+      { label: '完工時間',       keys: ['完工時間','完工','結束時間'] },
+      { label: '機台編號',       keys: ['機台編號','機台','設備編號'] },
+      { label: '機台部門',       keys: ['機台部門','部門','產線','線別'] },
+      { label: '實際工時',       keys: ['實際工時','工時','總工時','實做工時'] },
+
+      { label: '完工數',         keys: ['完工數','產出數','數量'] },
+      { label: '不良數',         keys: ['不良數','不良品數','不良'] },
+      { label: '除外名稱1',      keys: ['除外名稱1','除外1','除外名稱一'] },
+      { label: '除外時間1',      keys: ['除外時間1','除外時數1','除外時間一'] },
+
+      { label: '除外名稱2',      keys: ['除外名稱2','除外2','除外名稱二'] },
+      { label: '除外時間2',      keys: ['除外時間2','除外時數2','除外時間二'] },
+      { label: '除外名稱3',      keys: ['除外名稱3','除外3','除外名稱三'] },
+      { label: '除外時間3',      keys: ['除外時間3','除外時數3','除外時間三'] },
+    ];
+
+    // 儲存使用者輸入的修改值
+    const edits = new Map();
+
+    function showAlert(message, type = 'info') {
+      const alert = document.getElementById('alert');
+      alert.className = `alert alert-${type} show`;
+      alert.textContent = message;
+      setTimeout(() => alert.classList.remove('show'), 5000);
+    }
+
+    function showLoading(show) {
+      document.getElementById('loading').classList.toggle('show', show);
+    }
+
+    async function searchData(event) {
+      event.preventDefault();
+
+      const dySerialNum = document.getElementById('dySerialNum').value.trim();
+      if (!dySerialNum) {
+        showAlert('請輸入生產日報表序號', 'error');
+        return;
+      }
+
+      showLoading(true);
+      
+      // 不要隱藏整個 resultSection，只隱藏查詢結果的部分
+      // document.getElementById('resultSection').style.display = 'none';
+
+      try {
+        const response = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dySerialNum }),
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          currentData = result.data;
+          edits.clear();
+          document.getElementById('deleteFlag').checked = false;
+          
+          // 調試：顯示查詢到的資料
+          console.log('=== 查詢到的資料 ===');
+          console.log('完整資料:', result.data[0]);
+          console.log('所有 keys:', Object.keys(result.data[0]));
+          console.log('====================');
+          
+          // 判斷是否為當天的生產日報表
+          if (result.data && result.data.length > 0) {
+            const workDate = getValue(result.data[0], ['工作日期', '日期']);
+            console.log('從資料中取得的工作日期:', workDate);
+            currentDateType = isSameDay(workDate) ? 'same_day' : 'different_day';
+            
+            // 更新按鈕顯示
+            updateButtonVisibility(currentDateType);
+          }
+          
+          displayResults(result.data);
+          
+          // 顯示提示訊息
+          const dateTypeText = currentDateType === 'same_day' ? '當天修改（不需簽核）' : '非當天修改（需主管簽核）';
+          showAlert(`查詢成功！共找到 ${result.count} 筆資料 - ${dateTypeText}`, 'success');
+          
+          updateQueueStatus();
+        } else {
+          // 查詢失敗，顯示錯誤訊息
+          showAlert(result.message, 'error');
+          
+          // 確保 resultSection 仍然顯示（保留修改申請清單）
+          const resultSection = document.getElementById('resultSection');
+          if (resultSection) {
+            resultSection.style.display = 'block';
+          }
+          
+          // 隱藏查詢結果相關的區域
+          const resultHeader = document.querySelector('.result-header');
+          const deleteSection = document.querySelector('.delete-section');
+          const cardsContainer = document.getElementById('cardsContainer');
+          const saveBtn = document.getElementById('saveBtn');
+          
+          if (resultHeader) resultHeader.style.display = 'none';
+          if (deleteSection) deleteSection.style.display = 'none';
+          if (cardsContainer) cardsContainer.innerHTML = '';
+          if (saveBtn) saveBtn.style.display = 'none';
+          
+          // 確保修改申請清單和按鈕仍然可見
+          // 更新清單狀態（顯示已儲存的記錄）
+          await updateQueueStatus();
+          
+          // 更新按鈕顯示
+          await updateButtonVisibility();
+        }
+      } catch (error) {
+        showAlert('查詢失敗：' + error.message, 'error');
+        
+        // 查詢異常時也要保持修改申請清單可見
+        const resultSection = document.getElementById('resultSection');
+        if (resultSection) {
+          resultSection.style.display = 'block';
+        }
+        
+        // 隱藏查詢結果區域
+        const resultHeader = document.querySelector('.result-header');
+        const deleteSection = document.querySelector('.delete-section');
+        const cardsContainer = document.getElementById('cardsContainer');
+        const saveBtn = document.getElementById('saveBtn');
+        
+        if (resultHeader) resultHeader.style.display = 'none';
+        if (deleteSection) deleteSection.style.display = 'none';
+        if (cardsContainer) cardsContainer.innerHTML = '';
+        if (saveBtn) saveBtn.style.display = 'none';
+        
+        // 確保修改申請清單和按鈕仍然可見
+        await updateQueueStatus();
+        await updateButtonVisibility();
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    function getValue(row, keys, format) {
+      let v = '';
+      for (const k of keys) {
+        if (row && row[k] != null && String(row[k]).trim() !== '') {
+          v = row[k];
+          break;
+        }
+      }
+      if (format === 'hours2') {
+        const num = Number(v);
+        if (!Number.isFinite(num)) return v || '';
+        return num.toFixed(2);
+      }
+      return v == null ? '' : String(v);
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function displayResults(data) {
+      document.getElementById('recordCount').textContent = data.length;
+      const container = document.getElementById('cardsContainer');
+      container.innerHTML = '';
+
+      data.forEach((row, rowIndex) => {
+        const card = document.createElement('div');
+        card.className = 'prs-card';
+        card.innerHTML = `<div class="prs-card-body"></div>`;
+
+        const body = card.querySelector('.prs-card-body');
+        const section = document.createElement('div');
+        section.className = 'prs-section';
+        section.innerHTML = `<div class="prs-grid prs-grid-4x6"></div>`;
+        const grid = section.querySelector('.prs-grid');
+
+        FIELDS.forEach((f) => {
+          const value = getValue(row, f.keys, f.format);
+          const editable = EDITABLE_LABELS.has(f.label);
+          const editKey = `${rowIndex}::${f.label}`;
+          const currentEdit = edits.get(editKey) || '';
+
+          const item = document.createElement('div');
+          item.className = 'prs-item';
+
+          item.innerHTML = `
+            <div class="prs-label">${escapeHtml(f.label)}</div>
+            <div class="prs-value ${currentEdit ? 'prs-focus' : ''}">${escapeHtml(value || '')}</div>
+            ${editable ? `<input class="prs-input" data-editkey="${escapeHtml(editKey)}" placeholder="可輸入修改值" value="${escapeHtml(currentEdit)}" />` : `<div class="prs-input prs-input-disabled"></div>`}
+          `;
+
+          grid.appendChild(item);
+        });
+
+        body.appendChild(section);
+        container.appendChild(card);
+      });
+
+      // 綁定 input 事件
+      container.oninput = (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLInputElement)) return;
+        if (!t.classList.contains('prs-input')) return;
+        const editKey = t.getAttribute('data-editkey');
+        if (!editKey) return;
+
+        const v = t.value;
+        if (v && v.trim() !== '') edits.set(editKey, v);
+        else edits.delete(editKey);
+
+        const item = t.closest('.prs-item');
+        if (!item) return;
+        const valueEl = item.querySelector('.prs-value');
+        if (!valueEl) return;
+        valueEl.classList.toggle('prs-focus', !!(v && v.trim() !== ''));
+      };
+
+      document.getElementById('resultSection').style.display = 'block';
+      
+      // 重新顯示所有區域（可能在儲存後被隱藏）
+      const resultHeader = document.querySelector('.result-header');
+      const deleteSection = document.querySelector('.delete-section');
+      const actionButtons = document.querySelector('.action-buttons');
+      const saveBtn = document.getElementById('saveBtn');
+      
+      if (resultHeader) resultHeader.style.display = 'flex';
+      if (deleteSection) deleteSection.style.display = 'block';
+      if (actionButtons) actionButtons.style.display = 'flex';
+      if (saveBtn) saveBtn.style.display = 'inline-block';  // 重新顯示「儲存」按鈕
+    }
+
+    function handleDeleteToggle() {
+      const deleteChecked = document.getElementById('deleteFlag').checked;
+      const inputs = document.querySelectorAll('.prs-input:not(.prs-input-disabled)');
+      
+      inputs.forEach(input => {
+        input.disabled = deleteChecked;
+        if (deleteChecked) {
+          input.style.opacity = '0.5';
+          input.style.cursor = 'not-allowed';
+        } else {
+          input.style.opacity = '1';
+          input.style.cursor = 'text';
+        }
+      });
+    }
+
+    async function saveModification() {
+      if (!currentData || currentData.length === 0) {
+        showAlert('請先查詢資料', 'error');
+        return;
+      }
+
+      const deleteFlag = document.getElementById('deleteFlag').checked ? '是' : '否';
+      
+      // 收集修改資訊
+      const firstRow = currentData[0];
+      
+      // 先取得工作日期（用於判斷當天/非當天）
+      const workDateValue = getValue(firstRow, ['工作日期', '日期', 'work_date', '工作日']);
+      console.log('取得的工作日期（用於判斷）:', workDateValue);
+      
+      const modification = {
+        dy_serial_num: getValue(firstRow, ['生產日報表序號']),
+        pd_num: getValue(firstRow, ['發工單號']),
+        delete_flag: deleteFlag,
+        work_date_original: workDateValue || '',  // 添加工作日期
+      };
+
+      // 如果勾選刪除，也需要工作日期來判斷是否為當天
+      
+      if (deleteFlag === '否') {
+        // 收集所有修改值
+        const fieldMapping = {
+          '工作日期': 'work_date',
+          '工作者編號': 'worker_num',
+          '機台編號': 'machine_num',
+          '工序編號': 'prod_num',
+          '完工數': 'finish_qty',
+          '不良數': 'bad_qty',
+          '起工時間': 'start_time',
+          '完工時間': 'finish_time',
+          '除外名稱1': 'extra_name1',
+          '除外時間1': 'extra_time1',
+          '除外名稱2': 'extra_name2',
+          '除外時間2': 'extra_time2',
+          '除外名稱3': 'extra_name3',
+          '除外時間3': 'extra_time3',
+        };
+
+        for (const [label, key] of Object.entries(fieldMapping)) {
+          const editKey = `0::${label}`;
+          
+          // 特殊處理工作日期：使用更多可能的欄位名稱
+          let originalValue;
+          if (label === '工作日期') {
+            originalValue = workDateValue || '';
+          } else {
+            originalValue = getValue(firstRow, FIELDS.find(f => f.label === label)?.keys || []);
+          }
+          
+          const modifiedValue = edits.get(editKey) || '';
+          
+          modification[`${key}_original`] = originalValue;
+          modification[`${key}_modified`] = modifiedValue;
+        }
+      }
+
+      showLoading(true);
+
+      // 調試：顯示傳送的資料
+      console.log('=== 儲存的修改資料 ===');
+      console.log('完整資料:', modification);
+      console.log('工作日期 original:', modification.work_date_original);
+      console.log('工作日期 modified:', modification.work_date_modified);
+      console.log('====================');
+
+      try {
+        const response = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(modification),
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          showAlert(result.message, 'success');
+          
+          // 清空所有狀態
+          edits.clear();
+          currentData = [];
+          document.getElementById('deleteFlag').checked = false;
+          
+          // 隱藏查詢結果卡片區域（但保留修改申請清單）
+          document.getElementById('cardsContainer').innerHTML = '';
+          document.querySelector('.result-header').style.display = 'none';
+          document.querySelector('.delete-section').style.display = 'none';
+          
+          // 隱藏「儲存」按鈕（因為已經儲存了）
+          document.getElementById('saveBtn').style.display = 'none';
+          
+          // 但保留「上傳」和「列印」按鈕區域，讓使用者可以操作
+          // 不要隱藏 .action-buttons
+          
+          console.log('[儲存成功] 準備更新按鈕顯示...');
+          
+          // 更新清單狀態
+          await updateQueueStatus();
+          
+          console.log('[儲存成功] 清單狀態已更新，現在更新按鈕...');
+          
+          // 立即更新按鈕顯示
+          await updateButtonVisibility();
+          
+          console.log('[儲存成功] 按鈕顯示已更新');
+          
+          // 清空生產日報表序號輸入欄位
+          document.getElementById('dySerialNum').value = '';
+        } else {
+          showAlert(result.message, 'error');
+        }
+      } catch (error) {
+        showAlert('儲存失敗：' + error.message, 'error');
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function uploadFiles() {
+      showLoading(true);
+
+      try {
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          showAlert(result.message, 'success');
+          // 更新修改申請清單狀態
+          await updateQueueStatus();
+          // 延遲後更新按鈕顯示
+          setTimeout(async () => {
+            await updateButtonVisibility();
+          }, 100);
+          
+          // 清空生產日報表序號輸入欄位
+          document.getElementById('dySerialNum').value = '';
+        } else {
+          showAlert(result.message, 'error');
+        }
+      } catch (error) {
+        showAlert('上傳失敗：' + error.message, 'error');
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function printQueue() {
+      showLoading(true);
+
+      try {
+        const response = await fetch('/api/print', {
+          method: 'POST',
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          showAlert(result.message, 'success');
+          
+          // 開啟列印頁面（只包含非當天記錄）
+          if (result.print_urls && result.print_urls.length > 0) {
+            const printWindow = window.open(result.print_urls[0], '_blank');
+            
+            if (printWindow) {
+              // 列印頁面開啟後，更新清單和按鈕
+              setTimeout(async () => {
+                await updateQueueStatus();
+                await updateButtonVisibility();
+                
+                // 清空生產日報表序號輸入欄位
+                document.getElementById('dySerialNum').value = '';
+              }, 500);
+            }
+          }
+        } else {
+          showAlert(result.message, 'error');
+        }
+      } catch (error) {
+        showAlert('列印失敗：' + error.message, 'error');
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function clearQueue() {
+      if (!confirm('確定要清空列印清單嗎？')) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/clear_queue', {
+          method: 'POST',
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          showAlert(result.message, 'success');
+          await updateQueueStatus();
+          // 延遲後更新按鈕顯示
+          setTimeout(async () => {
+            await updateButtonVisibility();
+          }, 100);
+        } else {
+          showAlert(result.message, 'error');
+        }
+      } catch (error) {
+        showAlert('清空失敗：' + error.message, 'error');
+      }
+    }
+
+    async function updateQueueStatus() {
+      try {
+        const response = await fetch('/api/get_queue_status');
+        const result = await response.json();
+        
+        if (result.success) {
+          const count = result.queue_count;
+          const queue = result.queue || [];
+          
+          // 更新按鈕狀態
+          document.getElementById('printBtn').disabled = (count === 0);
+          
+          // 更新列印清單顯示
+          const queueSection = document.getElementById('printQueueSection');
+          const queueList = document.getElementById('queueList');
+          
+          if (count === 0) {
+            queueSection.style.display = 'none';
+          } else {
+            queueSection.style.display = 'block';
+            
+            // 生成列表項目
+            queueList.innerHTML = queue.map((item, index) => `
+              <div class="queue-item">
+                <span class="queue-item-number">${index + 1}.</span>
+                <span class="queue-item-serial">${item.dy_serial_num || '未知'}</span>
+                <button type="button" class="btn btn-danger btn-sm" onclick="deleteQueueItem(${index})" title="單筆刪除">
+                  ❌ 單筆刪除
+                </button>
+              </div>
+            `).join('');
+          }
+        }
+      } catch (error) {
+        console.error('更新清單狀態失敗:', error);
+      }
+    }
+
+    async function deleteQueueItem(index) {
+      if (!confirm('確定要刪除此筆記錄嗎？')) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/delete_queue_item', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: index })
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          showAlert(result.message, 'success');
+          updateQueueStatus();
+        } else {
+          showAlert(result.message, 'error');
+        }
+      } catch (error) {
+        showAlert('刪除失敗：' + error.message, 'error');
+      }
+    }
+
+    // 頁面載入時更新清單狀態和按鈕顯示
+    window.addEventListener('load', function() {
+      updateQueueStatus();
+      updateButtonVisibility();
+    });
+
+    // 定期更新清單狀態和按鈕（每5秒）
+    setInterval(function() {
+      updateQueueStatus();
+      updateButtonVisibility();
+    }, 5000);
+  
+    // Keep EXE alive while the page is open (heartbeat)
+    const __prsHeartbeat = () => {
+      fetch('/api/heartbeat', { method: 'POST', cache: 'no-store', keepalive: true })
+        .catch(() => {});
+    };
+    __prsHeartbeat();
+    setInterval(__prsHeartbeat, 3000);
+
+    // Best-effort: close backend when tab/window is closed
+    const __prsShutdown = () => {
+      try {
+        navigator.sendBeacon('/shutdown', '');
+      } catch (e) {
+        fetch('/shutdown', { method: 'POST', keepalive: true }).catch(() => {});
+      }
+    };
+    window.addEventListener('pagehide', __prsShutdown);
+    window.addEventListener('beforeunload', __prsShutdown);
+
+  </script>
+</body>
+</html>

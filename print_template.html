@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生產日報表 修改申請</title>
+  <style>
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: '新細明體', 'Microsoft JhengHei', Arial, sans-serif;
+      padding: 20px;
+      background: #fff;
+      width: 100%;
+    }
+
+    .print-container {
+      width: 100%;
+      max-width: 1400px;
+      margin: 0 auto;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 12px;
+      table-layout: fixed;  /* 固定表格佈局，確保欄寬一致 */
+    }
+
+    th, td {
+      border: 1px solid #000;
+      padding: 8px;
+      text-align: center;
+      font-size: 14px;
+      white-space: nowrap; /* 避免內容換行把高度撐大 */
+    }
+
+    .title-row {
+      font-size: 32px;
+      font-weight: bold;
+      padding: 18px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .header-cell { background-color: #f0f0f0; font-weight: bold; }
+    .label-cell  { background-color: #e8e8e8; font-weight: bold; width: 25%; }
+    .value-cell  { text-align: center; width: 25%; }
+    .empty-column { width: 50%; background-color: #fafafa; }
+
+    /* 補齊高度的空白列：用來把簽核推到最底（列印時會吃掉剩餘高度） */
+    .fill-row td {
+      height: 30px;   /* 螢幕預覽用 */
+      padding: 0;
+      background: #fff;
+      border-bottom: none; /* 移除「生管」上方最接近那條橫線（fill-row 與 sign-row 交界） */
+      border-left: none;   /* 移除左側短直線（簽核區側邊） */
+      border-right: none;  /* 移除右側短直線（簽核區側邊） */
+    }
+
+    /* 簽核列：固定在表格右下 */
+    .sign-row td {
+      text-align: right;
+      vertical-align: bottom;
+      font-size: 18px;
+      font-weight: bold;
+      padding-right: 12px;
+      padding-bottom: 10px;
+      background: #fff;
+      border-top: none; /* 與 fill-row 搭配，確保交界處不出現橫線 */
+      border-bottom: none; /* 移除「生管」下方最接近那條橫線 */
+      border-left: none;   /* 移除簽核區最左邊直線 */
+      border-right: none;  /* 移除簽核區最右邊直線 */
+    }
+
+    .sign-line{
+      display: inline-block;
+      width: 45mm;
+      border-bottom: 1px solid #000;
+      height: 0.9em;
+      vertical-align: baseline;
+      margin-left: 6px;
+    }
+
+    @media print {
+      @page {
+        size: A4 landscape; /* 橫式列印 */
+        margin: 4mm 5mm 4mm 5mm; /* 上 右 下 左 */
+      }
+
+      html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+      }
+
+      .no-print { display: none !important; }
+
+      /* 每個表格容器佔一頁 */
+      .print-container {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        height: 200mm !important;
+        overflow: hidden !important;
+        page-break-after: always !important;  /* 每個表格後分頁 */
+        break-after: page !important;
+      }
+
+      /* 最後一個表格不分頁 */
+      .print-container:last-child {
+        page-break-after: avoid !important;
+        break-after: avoid-page !important;
+      }
+
+      table {
+        height: 100% !important;
+        margin: 0 !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+      }
+
+      /* 讓 fill-row 吃掉剩餘高度，把簽核推到最底 */
+            .fill-row td { height: 100% !important; border-left: none !important; border-right: none !important; border-bottom: none !important; }
+
+      /* 簽核盡量靠右下 */
+      .sign-row td {
+        padding-right: 2mm !important;
+        padding-bottom: 2mm !important;
+        border-top: none !important;
+        border-bottom: none !important;
+        border-left: none !important;
+        border-right: none !important;
+      }
+    }
+
+    .print-button {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 1000;
+    }
+
+    .print-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    }
+
+  </style>
+</head>
+<body>
+  <button class="print-button no-print" onclick="window.print()">🖨️ 列印此頁</button>
+
+  {% for page_idx in range(0, records|length, 2) %}
+  <div class="print-container">
+    <table>
+      <!-- 標題列 -->
+      <tr>
+        <td colspan="6" class="title-row">生產日報表 修改申請</td>
+      </tr>
+
+      {% set left_record = records[page_idx] if page_idx < records|length else {} %}
+      {% set right_record = records[page_idx + 1] if page_idx + 1 < records|length else {} %}
+
+      <!-- 生產日報表序號 -->
+      <tr>
+        <td class="label-cell">★生產日報表序號</td>
+        <td colspan="2" class="value-cell">{{ left_record.dy_serial_num or '' }}</td>
+        <td class="label-cell">★生產日報表序號</td>
+        <td colspan="2" class="value-cell">{{ right_record.dy_serial_num or '' }}</td>
+      </tr>
+
+      <!-- 發工單號 -->
+      <tr>
+        <td class="label-cell">發工單號</td>
+        <td colspan="2" class="value-cell">{{ left_record.pd_num or '' }}</td>
+        <td class="label-cell">發工單號</td>
+        <td colspan="2" class="value-cell">{{ right_record.pd_num or '' }}</td>
+      </tr>
+
+      <!-- 刪除標記 -->
+      <tr>
+        <td class="label-cell">生產日報表刪除</td>
+        <td class="value-cell"></td>
+        <td class="value-cell">{% if left_record.delete_flag == '是' %}Y{% elif left_record.delete_flag == '否' %}N{% endif %}</td>
+        <td class="label-cell">生產日報表刪除</td>
+        <td class="value-cell"></td>
+        <td class="value-cell">{% if right_record.delete_flag == '是' %}Y{% elif right_record.delete_flag == '否' %}N{% endif %}</td>
+      </tr>
+
+      <!-- 原本/修改為標題 -->
+      <tr>
+        <td class="label-cell"></td>
+        <td class="header-cell">原本</td>
+        <td class="header-cell">修改為</td>
+        <td class="label-cell"></td>
+        <td class="header-cell">原本</td>
+        <td class="header-cell">修改為</td>
+      </tr>
+
+      <!-- 工作日期 -->
+      <tr>
+        <td class="label-cell">工作日期</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.work_date_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.work_date_modified or '' }}</td>
+        <td class="label-cell">工作日期</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.work_date_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.work_date_modified or '' }}</td>
+      </tr>
+
+      <!-- 工作者編號 -->
+      <tr>
+        <td class="label-cell">工作者編號</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.worker_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.worker_num_modified or '' }}</td>
+        <td class="label-cell">工作者編號</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.worker_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.worker_num_modified or '' }}</td>
+      </tr>
+
+      <!-- 機台代號 -->
+      <tr>
+        <td class="label-cell">機台代號</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.machine_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.machine_num_modified or '' }}</td>
+        <td class="label-cell">機台代號</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.machine_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.machine_num_modified or '' }}</td>
+      </tr>
+
+      <!-- 工序編號 -->
+      <tr>
+        <td class="label-cell">工序編號</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.prod_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.prod_num_modified or '' }}</td>
+        <td class="label-cell">工序編號</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.prod_num_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.prod_num_modified or '' }}</td>
+      </tr>
+
+      <!-- 完工數 -->
+      <tr>
+        <td class="label-cell">完工數</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.finish_qty_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.finish_qty_modified or '' }}</td>
+        <td class="label-cell">完工數</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.finish_qty_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.finish_qty_modified or '' }}</td>
+      </tr>
+
+      <!-- 不良數 -->
+      <tr>
+        <td class="label-cell">不良數</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.bad_qty_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.bad_qty_modified or '' }}</td>
+        <td class="label-cell">不良數</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.bad_qty_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.bad_qty_modified or '' }}</td>
+      </tr>
+
+      <!-- 起工時間 -->
+      <tr>
+        <td class="label-cell">起工時間</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.start_time_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.start_time_modified or '' }}</td>
+        <td class="label-cell">起工時間</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.start_time_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.start_time_modified or '' }}</td>
+      </tr>
+
+      <!-- 完工時間 -->
+      <tr>
+        <td class="label-cell">完工時間</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.finish_time_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.finish_time_modified or '' }}</td>
+        <td class="label-cell">完工時間</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.finish_time_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.finish_time_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外名稱1 -->
+      <tr>
+        <td class="label-cell">除外名稱1</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_name1_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_name1_modified or '' }}</td>
+        <td class="label-cell">除外名稱1</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_name1_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_name1_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外時間1 -->
+      <tr>
+        <td class="label-cell">除外時間1</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_time1_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_time1_modified or '' }}</td>
+        <td class="label-cell">除外時間1</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_time1_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_time1_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外名稱2 -->
+      <tr>
+        <td class="label-cell">除外名稱2</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_name2_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_name2_modified or '' }}</td>
+        <td class="label-cell">除外名稱2</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_name2_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_name2_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外時間2 -->
+      <tr>
+        <td class="label-cell">除外時間2</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_time2_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_time2_modified or '' }}</td>
+        <td class="label-cell">除外時間2</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_time2_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_time2_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外名稱3 -->
+      <tr>
+        <td class="label-cell">除外名稱3</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_name3_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_name3_modified or '' }}</td>
+        <td class="label-cell">除外名稱3</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_name3_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_name3_modified or '' }}</td>
+      </tr>
+
+      <!-- 除外時間3 -->
+      <tr>
+        <td class="label-cell">除外時間3</td>
+        <td class="value-cell">{% if left_record.delete_flag != '是' %}{{ left_record.extra_time3_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ left_record.extra_time3_modified or '' }}</td>
+        <td class="label-cell">除外時間3</td>
+        <td class="value-cell">{% if right_record.delete_flag != '是' %}{{ right_record.extra_time3_original or '' }}{% endif %}</td>
+        <td class="value-cell">{{ right_record.extra_time3_modified or '' }}</td>
+      </tr>
+
+      <!-- 撐滿剩餘高度：把簽核推到最底 -->
+      <tr class="fill-row">
+        <td colspan="6"></td>
+      </tr>
+
+      <!-- 簽核（表格右下） -->
+      <tr class="sign-row">
+        <td colspan="6">生管：<span class="sign-line"></span></td>
+      </tr>
+    </table>
+  </div>
+  {% endfor %}
+
+  <script>
+    // 頁面載入後自動準備列印
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        // 可選：自動開啟列印對話框
+        // window.print();
+      }, 500);
+    });
+  </script>
+</body>
+</html>
